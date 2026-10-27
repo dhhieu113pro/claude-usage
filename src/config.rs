@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ProfileConfig {
     pub name: String,
-    /// Launcher command (e.g. `claude-khiet`); its `.cmd` is parsed for CLAUDE_CONFIG_DIR.
+    /// Launcher command (e.g. `claude-work`); its `.cmd` is parsed for CLAUDE_CONFIG_DIR.
     #[serde(default)]
     pub command: Option<String>,
     /// Explicit config dir; takes priority over `command`. `~` is expanded.
@@ -32,11 +32,7 @@ impl Default for Config {
         };
         Config {
             refresh_seconds: default_refresh(),
-            profiles: vec![
-                p("main", Some("claude"), None),
-                p("huy", Some("claude-huy"), None),
-                p("khiet", Some("claude-khiet"), None),
-            ],
+            profiles: vec![p("main", Some("claude"), None)],
         }
     }
 }

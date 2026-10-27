@@ -51,9 +51,7 @@ Claude Code handles authentication and token refresh itself, so the widget never
 {
   "refresh_seconds": 900,
   "profiles": [
-    { "name": "main",  "command": "claude" },
-    { "name": "huy",   "command": "claude-huy" },
-    { "name": "khiet", "command": "claude-khiet" }
+    { "name": "main", "command": "claude" }
   ]
 }
 ```
@@ -65,10 +63,10 @@ Claude Code handles authentication and token refresh itself, so the widget never
 | `config_dir` | Explicit config directory (`~` expanded). Takes priority over `command` |
 | `refresh_seconds` | Poll interval in seconds, default 900 (15 min), minimum 15. "Refresh now" and restarting the app each make an immediate request, so avoid spamming them |
 
-Profile launchers look like this (`claude-khiet.cmd`):
+Profile launchers look like this (`claude-work.cmd`):
 
 ```bat
-set "CLAUDE_CONFIG_DIR=%USERPROFILE%\claude-profiles\claude-khiet"
+set "CLAUDE_CONFIG_DIR=%USERPROFILE%\claude-profiles\claude-work"
 claude.exe %*
 ```
 
