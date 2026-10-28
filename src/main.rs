@@ -1,7 +1,9 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod mcp;
 mod usage;
+mod web;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -33,6 +35,7 @@ const ID_REFRESH: usize = 1;
 const ID_CONFIG: usize = 2;
 const ID_MOVE: usize = 3;
 const ID_QUIT: usize = 4;
+const ID_MCP: usize = 5;
 
 // Layout, in DIPs.
 const PAD: f32 = 8.0;
@@ -471,6 +474,7 @@ fn show_menu(hwnd: HWND) {
             ID_MOVE,
             w!("Unlock to move"),
         );
+        let _ = AppendMenuW(menu, MF_STRING, ID_MCP, w!("Manage MCP servers"));
         let _ = AppendMenuW(menu, MF_STRING, ID_CONFIG, w!("Edit config"));
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quit"));
 
@@ -492,6 +496,11 @@ fn show_menu(hwnd: HWND) {
                 UNLOCKED.store(now, Ordering::Relaxed);
                 set_click_through(hwnd, !now);
                 repaint(hwnd);
+            }
+            ID_MCP => {
+                if let Some(url) = web::url() {
+                    ShellExecuteW(None, w!("open"), &HSTRING::from(url), None, None, SW_SHOWNORMAL);
+                }
             }
             ID_CONFIG => {
                 let path = HSTRING::from(config::config_path().as_os_str());

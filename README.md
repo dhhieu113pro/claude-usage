@@ -70,6 +70,15 @@ set "CLAUDE_CONFIG_DIR=%USERPROFILE%\claude-profiles\claude-work"
 claude.exe %*
 ```
 
+## MCP servers
+
+Tray menu → **Manage MCP servers** opens a local page (`127.0.0.1`, random port and token, only while the widget runs) to add, edit and delete MCP servers (`stdio` with args and env vars, or `http` with headers).
+
+- The shared list is stored in `%APPDATA%\claude-usage-widget\mcp.json`.
+- Each profile has a checkbox per server. It is **on** when the server is present in `mcpServers` of `<profile dir>\.claude.json`; toggling adds or removes the entry and leaves the rest of the file untouched.
+- Editing or renaming a server updates it in every profile that has it on; deleting removes it from all of them.
+- Env values are stored in plain text in both files, as Claude Code does itself. Restart running Claude sessions to pick up changes.
+
 ## Build and run
 
 Requires the Rust MSVC toolchain.
@@ -104,3 +113,5 @@ Remove with `Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion
 - `src/main.rs` – window, layered rendering, tray menu, polling thread
 - `src/config.rs` – config file, profile directory resolution
 - `src/usage.rs` – runs `claude -p "/usage"` and parses it
+- `src/mcp.rs` – central MCP list, sync into profile `.claude.json`
+- `src/web.rs`, `src/mcp_ui.html` – localhost server and UI for the MCP manager
