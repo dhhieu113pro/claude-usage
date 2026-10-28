@@ -21,11 +21,12 @@ Ring colour is based on percent used, per ring:
 
 - Any number of profiles, laid out in a compact grid of 2 rows
 - Transparent, always-on-top and click-through: mouse clicks go to the apps underneath
-- Tray icon menu: **Refresh now**, **Unlock to move** (drag the widget), **Edit config**, **Quit**
+- Tray icon menu: **Refresh now**, **Unlock to move** (drag the widget), **Manage MCP servers**, **Edit config**, **Quit**
 - Per-monitor DPI aware; starts bottom-right of the work area
 - Draws its own tray icon at startup (dark disc with an orange and green double ring); if it is hidden, drag it out of the tray overflow
 - Refreshes every 15 minutes by default; the old numbers stay visible while a refresh runs
 - Config is reloaded on every refresh, so adding or removing profiles needs no restart
+- Manage MCP servers once and switch them on or off per profile (see [MCP servers](#mcp-servers))
 
 ## How it works
 
@@ -77,6 +78,8 @@ Tray menu → **Manage MCP servers** opens a local page (`127.0.0.1`, random por
 - The shared list is stored in `%APPDATA%\claude-usage-widget\mcp.json`.
 - Each profile has a checkbox per server. It is **on** when the server is present in `mcpServers` of `<profile dir>\.claude.json`; toggling adds or removes the entry and leaves the rest of the file untouched.
 - Editing or renaming a server updates it in every profile that has it on; deleting removes it from all of them.
+- **Import** copies the servers already in a profile's `.claude.json` into the shared list (names already in the list are skipped). Keys the UI does not edit, such as `tools`, are kept; entries with a type other than `stdio`/`http` are skipped.
+- The page has an **Auto / Light / Dark** theme button; the choice is remembered in the browser.
 - Env values are stored in plain text in both files, as Claude Code does itself. Restart running Claude sessions to pick up changes.
 
 ## Build and run
