@@ -3,7 +3,7 @@
 //! Anything that can reach this port can write commands into Claude configs, so every request
 //! must carry the Host of the loopback address (blocks DNS rebinding) and a random token that
 //! only the opened page knows (blocks cross-site requests).
-use crate::{config, mcp};
+use crate::{config, mcp, profile};
 use serde_json::{json, Value};
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -13,7 +13,11 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const PAGE: &str = include_str!("mcp_ui.html");
+const PAGE_PROFILES: &str = include_str!("profiles_ui.html");
+const PAGE_MCP: &str = include_str!("mcp_ui.html");
+const PAGE_SETTINGS: &str = include_str!("settings_ui.html");
+const UI_CSS: &str = include_str!("ui_common.css");
+const UI_JS: &str = include_str!("ui_common.js");
 const MAX_BODY: usize = 1 << 20;
 
 struct Handle {
@@ -29,8 +33,8 @@ fn random_token() -> String {
         .collect()
 }
 
-/// Starts the server on first use and returns the URL to open.
-pub fn url() -> Option<String> {
+/// Starts the server on first use and returns the URL of a page (`/profiles`, `/mcp`, `/settings`).
+pub fn url(page: &str) -> Option<String> {
     let handle = SERVER.get_or_init(|| {
         let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
         let port = listener.local_addr().ok()?.port();
@@ -43,7 +47,7 @@ pub fn url() -> Option<String> {
         });
         Some(Handle { port, token })
     });
-    handle.as_ref().map(|h| format!("http://127.0.0.1:{}/?t={}", h.port, h.token))
+    handle.as_ref().map(|h| format!("http://127.0.0.1:{}{page}?t={}", h.port, h.token))
 }
 
 struct Request {
@@ -125,11 +129,25 @@ fn handle(mut stream: TcpStream, port: u16, token: &str) -> std::io::Result<()> 
         return respond(&mut stream, "403 Forbidden", "text/plain", "forbidden");
     }
     let (route, query) = req.path.split_once('?').unwrap_or((&req.path, ""));
-    if req.method == "GET" && route == "/" {
-        if query.split('&').any(|p| p == format!("t={token}")) {
-            return respond(&mut stream, "200 OK", "text/html; charset=utf-8", PAGE);
+    if req.method == "GET" {
+        // Shared assets hold no data, so they need no token.
+        match route {
+            "/ui.css" => return respond(&mut stream, "200 OK", "text/css; charset=utf-8", UI_CSS),
+            "/ui.js" => return respond(&mut stream, "200 OK", "text/javascript; charset=utf-8", UI_JS),
+            _ => {}
         }
-        return respond(&mut stream, "403 Forbidden", "text/plain", "forbidden");
+        let page = match route {
+            "/" | "/profiles" => Some(PAGE_PROFILES),
+            "/mcp" => Some(PAGE_MCP),
+            "/settings" => Some(PAGE_SETTINGS),
+            _ => None,
+        };
+        if let Some(page) = page {
+            if query.split('&').any(|p| p == format!("t={token}")) {
+                return respond(&mut stream, "200 OK", "text/html; charset=utf-8", page);
+            }
+            return respond(&mut stream, "403 Forbidden", "text/plain", "forbidden");
+        }
     }
     if req.token != token {
         return respond(&mut stream, "403 Forbidden", "text/plain", "forbidden");
@@ -141,6 +159,9 @@ fn handle(mut stream: TcpStream, port: u16, token: &str) -> std::io::Result<()> 
         ("POST", "/api/delete") => delete_server(&body),
         ("POST", "/api/toggle") => toggle(&body),
         ("POST", "/api/import") => import(&body),
+        ("POST", "/api/profile") => new_profile(&body),
+        ("GET", "/api/config") => Ok(json!(config::load())),
+        ("POST", "/api/config") => save_config(&body),
         _ => return respond(&mut stream, "404 Not Found", "text/plain", "not found"),
     };
     json_reply(&mut stream, result)
@@ -198,4 +219,28 @@ fn import(body: &Value) -> Result<Value, String> {
         .find(|(n, _)| n == profile)
         .ok_or("unknown profile")?;
     Ok(json!({ "added": mcp::import(&dir)? }))
+}
+fn new_profile(body: &Value) -> Result<Value, String> {
+    let name = body["name"].as_str().ok_or("name required")?.trim();
+    let servers: Vec<String> = body["servers"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let made = profile::create(name, &servers)?;
+    if let Some(tx) = crate::REFRESH_TX.get() {
+        let _ = tx.send(());
+    }
+    Ok(json!({
+        "dir": made.dir.display().to_string(),
+        "launcher": made.launcher.display().to_string(),
+        "notes": made.notes,
+    }))
+}
+fn save_config(body: &Value) -> Result<Value, String> {
+    let cfg: config::Config = serde_json::from_value(body.clone()).map_err(|e| e.to_string())?;
+    config::save(&config::normalize(cfg)?)?;
+    if let Some(tx) = crate::REFRESH_TX.get() {
+        let _ = tx.send(());
+    }
+    Ok(json!({}))
 }

@@ -60,7 +60,7 @@ pub fn load() -> Config {
     }
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default()
 }
 
@@ -95,4 +95,66 @@ pub fn resolve_dir(p: &ProfileConfig) -> PathBuf {
         return dir;
     }
     home().join(".claude")
+}
+
+/// Trims fields, turns blank optional ones into `None` and checks the result is usable.
+pub fn normalize(mut cfg: Config) -> Result<Config, String> {
+    if cfg.refresh_seconds < 15 {
+        return Err("refresh must be at least 15 seconds".into());
+    }
+    let blank = |v: &mut Option<String>| {
+        *v = v.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    };
+    for (i, p) in cfg.profiles.iter_mut().enumerate() {
+        p.name = p.name.trim().to_string();
+        if p.name.is_empty() {
+            return Err(format!("profile {} has no name", i + 1));
+        }
+        blank(&mut p.command);
+        blank(&mut p.config_dir);
+    }
+    for (i, p) in cfg.profiles.iter().enumerate() {
+        if cfg.profiles[..i].iter().any(|q| q.name == p.name) {
+            return Err(format!("profile '{}' appears twice", p.name));
+        }
+    }
+    Ok(cfg)
+}
+
+pub fn save(cfg: &Config) -> Result<(), String> {
+    let path = config_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(name: &str, command: &str) -> ProfileConfig {
+        ProfileConfig { name: name.into(), command: Some(command.into()), config_dir: Some("  ".into()) }
+    }
+
+    fn cfg(refresh: u64, profiles: Vec<ProfileConfig>) -> Config {
+        Config { refresh_seconds: refresh, profiles }
+    }
+
+    #[test]
+    fn normalize_trims_and_blanks() {
+        let out = normalize(cfg(900, vec![profile(" a ", " claude-a "), profile("b", "")])).unwrap();
+        assert_eq!(out.profiles[0].name, "a");
+        assert_eq!(out.profiles[0].command.as_deref(), Some("claude-a"));
+        assert_eq!(out.profiles[0].config_dir, None);
+        assert_eq!(out.profiles[1].command, None);
+    }
+
+    #[test]
+    fn normalize_rejects_bad_config() {
+        assert!(normalize(cfg(14, vec![])).is_err());
+        assert!(normalize(cfg(900, vec![profile(" ", "x")])).is_err());
+        assert!(normalize(cfg(900, vec![profile("a", "x"), profile("a", "y")])).is_err());
+    }
 }

@@ -2,6 +2,7 @@
 
 mod config;
 mod mcp;
+mod profile;
 mod usage;
 mod web;
 
@@ -36,6 +37,7 @@ const ID_CONFIG: usize = 2;
 const ID_MOVE: usize = 3;
 const ID_QUIT: usize = 4;
 const ID_MCP: usize = 5;
+const ID_PROFILES: usize = 6;
 
 // Layout, in DIPs.
 const PAD: f32 = 8.0;
@@ -448,7 +450,7 @@ fn tray_data(hwnd: HWND) -> NOTIFYICONDATAW {
         hIcon: HICON(TRAY_ICON.load(Ordering::Relaxed) as *mut _),
         ..Default::default()
     };
-    for (dst, src) in nid.szTip.iter_mut().zip("Claude Usage".encode_utf16()) {
+    for (dst, src) in nid.szTip.iter_mut().zip("Usage Rings for Claude Code".encode_utf16()) {
         *dst = src;
     }
     nid
@@ -463,6 +465,15 @@ fn set_click_through(hwnd: HWND, through: bool) {
     }
 }
 
+/// Opens one page of the local manager UI in the default browser.
+fn open_page(page: &str) {
+    if let Some(url) = web::url(page) {
+        unsafe {
+            ShellExecuteW(None, w!("open"), &HSTRING::from(url), None, None, SW_SHOWNORMAL);
+        }
+    }
+}
+
 fn show_menu(hwnd: HWND) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
@@ -474,8 +485,9 @@ fn show_menu(hwnd: HWND) {
             ID_MOVE,
             w!("Unlock to move"),
         );
-        let _ = AppendMenuW(menu, MF_STRING, ID_MCP, w!("Manage MCP servers"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_CONFIG, w!("Edit config"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_PROFILES, w!("Profiles"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_MCP, w!("MCP servers"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_CONFIG, w!("Settings"));
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quit"));
 
         let mut pt = POINT::default();
@@ -497,15 +509,9 @@ fn show_menu(hwnd: HWND) {
                 set_click_through(hwnd, !now);
                 repaint(hwnd);
             }
-            ID_MCP => {
-                if let Some(url) = web::url() {
-                    ShellExecuteW(None, w!("open"), &HSTRING::from(url), None, None, SW_SHOWNORMAL);
-                }
-            }
-            ID_CONFIG => {
-                let path = HSTRING::from(config::config_path().as_os_str());
-                ShellExecuteW(None, w!("open"), &path, None, None, SW_SHOWNORMAL);
-            }
+            ID_PROFILES => open_page("/profiles"),
+            ID_MCP => open_page("/mcp"),
+            ID_CONFIG => open_page("/settings"),
             ID_QUIT => {
                 let _ = DestroyWindow(hwnd);
             }
@@ -647,7 +653,7 @@ fn main() -> Result<()> {
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
             class,
-            w!("Claude Usage"),
+            w!("Usage Rings for Claude Code"),
             WS_POPUP,
             0,
             0,

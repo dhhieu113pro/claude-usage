@@ -1,6 +1,9 @@
-# Claude Usage Widget
+# Usage Rings for Claude Code
 
-A small, transparent Windows desktop widget that shows Claude usage for several profiles at once.
+A small, transparent Windows desktop widget that shows Claude Code usage for several profiles at once.
+
+> Unofficial. Not affiliated with, endorsed by or sponsored by Anthropic. "Claude" is a trademark of Anthropic.
+
 Built in Rust with [windows-rs](https://github.com/microsoft/windows-rs) (Direct2D + DirectWrite).
 
 Each profile is drawn as a double ring:
@@ -21,7 +24,7 @@ Ring colour is based on percent used, per ring:
 
 - Any number of profiles, laid out in a compact grid of 2 rows
 - Transparent, always-on-top and click-through: mouse clicks go to the apps underneath
-- Tray icon menu: **Refresh now**, **Unlock to move** (drag the widget), **Manage MCP servers**, **Edit config**, **Quit**
+- Tray icon menu: **Refresh now**, **Unlock to move** (drag the widget), **Profiles**, **MCP servers**, **Settings**, **Quit**
 - Per-monitor DPI aware; starts bottom-right of the work area
 - Draws its own tray icon at startup (dark disc with an orange and green double ring); if it is hidden, drag it out of the tray overflow
 - Refreshes every 15 minutes by default; the old numbers stay visible while a refresh runs
@@ -46,7 +49,14 @@ Claude Code handles authentication and token refresh itself, so the widget never
 
 ## Configuration
 
-`%APPDATA%\claude-usage-widget\config.json` is created on first run:
+The tray menu opens a local manager in the browser (`127.0.0.1`, random port and token, only while the widget runs) with three pages: **Profiles**, **MCP servers** and **Settings**.
+
+- **Profiles** lists the profiles shown in the widget with their folder, launcher command and enabled MCP servers. Edit changes the name, launcher command or config folder; Remove only hides a profile in the widget (its files are kept); *Add existing…* shows an existing config folder; *New profile* creates one (see below).
+- **Settings** sets the refresh interval.
+
+Saving applies immediately and triggers a refresh.
+
+The settings are stored in `%APPDATA%\claude-usage-widget\config.json`, created on first run (you can still edit it by hand):
 
 ```json
 {
@@ -73,13 +83,14 @@ claude.exe %*
 
 ## MCP servers
 
-Tray menu → **Manage MCP servers** opens a local page (`127.0.0.1`, random port and token, only while the widget runs) to add, edit and delete MCP servers (`stdio` with args and env vars, or `http` with headers).
+Tray menu → **MCP servers** (or the *MCP servers* page of the manager) lets you add, edit and delete MCP servers (`stdio` with args and env vars, or `http` with headers).
 
 - The shared list is stored in `%APPDATA%\claude-usage-widget\mcp.json`.
 - Each profile has a checkbox per server. It is **on** when the server is present in `mcpServers` of `<profile dir>\.claude.json`; toggling adds or removes the entry and leaves the rest of the file untouched.
 - Editing or renaming a server updates it in every profile that has it on; deleting removes it from all of them.
 - **Import** copies the servers already in a profile's `.claude.json` into the shared list (names already in the list are skipped). Keys the UI does not edit, such as `tools`, are kept; entries with a type other than `stdio`/`http` are skipped.
-- The page has an **Auto / Light / Dark** theme button; the choice is remembered in the browser.
+- **New profile** (on the Profiles page) does what `new-claude-profile.bat` does: it creates `%USERPROFILE%\claude-profiles\<name>` with a default `settings.json`, writes the launcher `%USERPROFILE%\.local\bin\<name>.cmd` (sets `CLAUDE_CONFIG_DIR`, runs `claude.exe`), adds the profile to the widget, and turns on the shared MCP servers you tick. Existing folders, `settings.json` and launchers are kept. `claude.exe` is looked up in `CLAUDE_EXE`, `%USERPROFILE%\.local\bin`, then `PATH`; `CLAUDE_PROFILE_ROOT` and `CLAUDE_BIN_DIR` override the folders. Servers that run through `dnx` are plain `stdio` servers with command `dnx`.
+- Every page has a theme icon (system, sun, moon) for **Auto / Light / Dark**; the choice is remembered in the browser.
 - Env values are stored in plain text in both files, as Claude Code does itself. Restart running Claude sessions to pick up changes.
 
 ## Build and run
@@ -116,5 +127,7 @@ Remove with `Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion
 - `src/main.rs` – window, layered rendering, tray menu, polling thread
 - `src/config.rs` – config file, profile directory resolution
 - `src/usage.rs` – runs `claude -p "/usage"` and parses it
+- `src/profile.rs` – creates a profile (folder, launcher, widget entry)
 - `src/mcp.rs` – central MCP list, sync into profile `.claude.json`
-- `src/web.rs`, `src/mcp_ui.html` – localhost server and UI for the MCP manager
+- `src/web.rs` – localhost server for the manager UI
+- `src/profiles_ui.html`, `src/mcp_ui.html`, `src/settings_ui.html`, `src/ui_common.css`, `src/ui_common.js` – the manager pages and shared styles/helpers

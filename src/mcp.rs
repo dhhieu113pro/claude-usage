@@ -251,12 +251,15 @@ pub fn delete(name: &str, profile_dirs: &[PathBuf]) -> Result<(), String> {
 }
 
 #[cfg(test)]
+// Tests share process-wide env vars (APPDATA, CLAUDE_*), so they run one at a time.
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     // The store path comes from APPDATA, which is process-wide, so tests run one at a time.
-    static LOCK: Mutex<()> = Mutex::new(());
+
 
     struct Env {
         root: PathBuf,
@@ -265,7 +268,7 @@ mod tests {
 
     impl Env {
         fn new(tag: &str) -> Env {
-            let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let root = std::env::temp_dir().join(format!("mcp-test-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
