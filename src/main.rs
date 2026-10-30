@@ -3,6 +3,7 @@
 mod config;
 mod mcp;
 mod profile;
+mod update;
 mod usage;
 mod web;
 
@@ -38,6 +39,7 @@ const ID_MOVE: usize = 3;
 const ID_QUIT: usize = 4;
 const ID_MCP: usize = 5;
 const ID_PROFILES: usize = 6;
+const ID_UPDATE: usize = 7;
 
 // Layout, in DIPs.
 const PAD: f32 = 8.0;
@@ -62,6 +64,8 @@ static STATE: Mutex<Vec<ProfileState>> = Mutex::new(Vec::new());
 static REFRESH_TX: OnceLock<Sender<()>> = OnceLock::new();
 /// When unlocked the window catches the mouse so it can be dragged.
 static UNLOCKED: AtomicBool = AtomicBool::new(false);
+/// Set while an update check or install is running, so a second click is ignored.
+static UPDATING: AtomicBool = AtomicBool::new(false);
 /// Tray icon handle, drawn at startup.
 static TRAY_ICON: AtomicIsize = AtomicIsize::new(0);
 
@@ -474,6 +478,47 @@ fn open_page(page: &str) {
     }
 }
 
+fn message(text: &str, flags: MESSAGEBOX_STYLE) -> MESSAGEBOX_RESULT {
+    unsafe { MessageBoxW(None, &HSTRING::from(text), w!("Usage Rings for Claude Code"), flags | MB_TOPMOST) }
+}
+
+/// Checks GitHub for a newer release and, if the user agrees, installs it and restarts.
+fn check_for_updates(hwnd: HWND) {
+    if UPDATING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let hwnd = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        let current = env!("CARGO_PKG_VERSION");
+        let outcome = (|| -> std::result::Result<bool, String> {
+            let release = update::fetch_latest()?;
+            if !update::is_newer(&release.tag, current) {
+                message(&format!("You're up to date (v{current})."), MB_OK | MB_ICONINFORMATION);
+                return Ok(false);
+            }
+            let ask = format!("Update to {}? The app will restart.", release.tag);
+            if message(&ask, MB_YESNO | MB_ICONQUESTION) != IDYES {
+                return Ok(false);
+            }
+            let ready = update::download_and_verify(&release)?;
+            update::start_replace_helper(&ready)?;
+            Ok(true)
+        })();
+        match outcome {
+            Ok(true) => unsafe {
+                // Exit so the helper can swap the exe; it relaunches the new one.
+                let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
+                return;
+            },
+            Ok(false) => {}
+            Err(e) => {
+                message(&format!("Update failed: {e}"), MB_OK | MB_ICONERROR);
+            }
+        }
+        UPDATING.store(false, Ordering::SeqCst);
+    });
+}
+
 fn show_menu(hwnd: HWND) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
@@ -488,6 +533,7 @@ fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, ID_PROFILES, w!("Profiles"));
         let _ = AppendMenuW(menu, MF_STRING, ID_MCP, w!("MCP servers"));
         let _ = AppendMenuW(menu, MF_STRING, ID_CONFIG, w!("Settings"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_UPDATE, w!("Check for updates"));
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quit"));
 
         let mut pt = POINT::default();
@@ -512,6 +558,7 @@ fn show_menu(hwnd: HWND) {
             ID_PROFILES => open_page("/profiles"),
             ID_MCP => open_page("/mcp"),
             ID_CONFIG => open_page("/settings"),
+            ID_UPDATE => check_for_updates(hwnd),
             ID_QUIT => {
                 let _ = DestroyWindow(hwnd);
             }
