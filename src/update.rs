@@ -1,6 +1,10 @@
 //! Self-update: find the latest GitHub release, download it, verify its SHA-256
 //! and hand the final replace-and-relaunch to a small PowerShell helper.
 
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
 pub const REPO: &str = "dhhieu113pro/claude-usage";
 
 #[derive(Debug)]
@@ -124,6 +128,134 @@ pub fn parse_release(json: &str, arch: &str) -> Result<Release, String> {
     }
 }
 
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn run(cmd: &mut Command) -> Result<Output, String> {
+    let out = cmd
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Could not run {}: {e}", cmd.get_program().to_string_lossy()))?;
+    if out.status.success() {
+        Ok(out)
+    } else {
+        Err(format!(
+            "{} failed: {}",
+            cmd.get_program().to_string_lossy(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+fn curl() -> Command {
+    let mut c = Command::new("curl.exe");
+    c.args(["-sSL", "--fail", "-H", "User-Agent: claude-usage-widget"]);
+    c
+}
+
+pub fn fetch_latest() -> Result<Release, String> {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let out = run(curl().arg(url)).map_err(|e| format!("Could not reach GitHub. {e}"))?;
+    parse_release(&String::from_utf8_lossy(&out.stdout), arch())
+}
+
+pub struct Ready {
+    pub dir: PathBuf,
+    pub new_exe: PathBuf,
+}
+
+/// Ok when the zip's SHA-256 matches the hash in the checksum file's text.
+pub fn verify_zip(zip: &[u8], sha_text: &str) -> Result<(), String> {
+    let expected = parse_sha_file(sha_text).ok_or("The checksum file is empty or malformed.")?;
+    let actual = sha256_hex(zip);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("Checksum mismatch (expected {expected}, got {actual}). The download was discarded."))
+    }
+}
+
+/// Downloads, verifies and unpacks a release; nothing installed is touched.
+pub fn download_and_verify(r: &Release) -> Result<Ready, String> {
+    let safe_tag: String = r.tag.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')).collect();
+    let dir = std::env::temp_dir().join(format!("claude-usage-update-{safe_tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+
+    let result = (|| {
+        let zip = dir.join("update.zip");
+        let sha = dir.join("update.zip.sha256");
+        run(curl().arg("-o").arg(&zip).arg(&r.zip_url))?;
+        run(curl().arg("-o").arg(&sha).arg(&r.sha_url))?;
+        let bytes = std::fs::read(&zip).map_err(|e| e.to_string())?;
+        verify_zip(&bytes, &std::fs::read_to_string(&sha).map_err(|e| e.to_string())?)?;
+
+        // Absolute path so a GNU tar earlier on PATH can't shadow the Windows one.
+        let root = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()));
+        run(Command::new(root.join("System32").join("tar.exe")).arg("-xf").arg(&zip).arg("-C").arg(&dir))?;
+        let new_exe = dir
+            .join(format!("claude-usage-widget-{}-{}", r.tag, arch()))
+            .join("claude-usage-widget.exe");
+        if new_exe.is_file() {
+            Ok(new_exe)
+        } else {
+            Err("The downloaded package does not contain claude-usage-widget.exe.".to_string())
+        }
+    })();
+
+    match result {
+        Ok(new_exe) => Ok(Ready { dir, new_exe }),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            Err(e)
+        }
+    }
+}
+
+fn helper_script() -> &'static str {
+    r#"param([int]$ProcId, [string]$Target, [string]$NewExe, [string]$TempDir)
+$old = "${Target}.old"
+Wait-Process -Id $ProcId -Timeout 30 -ErrorAction SilentlyContinue
+try {
+    $ErrorActionPreference = 'Stop'
+    Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+    Rename-Item -LiteralPath $Target -NewName (Split-Path $old -Leaf)
+    Copy-Item -LiteralPath $NewExe -Destination $Target
+    Start-Process -FilePath $Target
+    Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+} catch {
+    if (Test-Path -LiteralPath $old) {
+        Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+        Rename-Item -LiteralPath $old -NewName (Split-Path $Target -Leaf)
+    }
+    Start-Process -FilePath $Target
+}
+"#
+}
+
+/// Starts the hidden helper that waits for this process to exit, swaps the exe and relaunches.
+/// The caller must exit right after this returns Ok.
+pub fn start_replace_helper(ready: &Ready) -> Result<(), String> {
+    let target = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ps1 = ready.dir.join("update.ps1");
+    std::fs::write(&ps1, helper_script()).map_err(|e| format!("Could not write the update helper: {e}"))?;
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
+        .arg(&ps1)
+        .arg("-ProcId")
+        .arg(std::process::id().to_string())
+        .arg("-Target")
+        .arg(&target)
+        .arg("-NewExe")
+        .arg(&ready.new_exe)
+        .arg("-TempDir")
+        .arg(&ready.dir)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not start the update helper: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +320,31 @@ mod tests {
         assert!(err.contains("win-arm64"));
 
         assert!(parse_release(r#"{"message":"rate limit"}"#, "win-x64").is_err());
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    #[test]
+    fn helper_script_contains_rollback() {
+        let s = helper_script();
+        for needle in ["param(", "$ProcId", "$Target", "$NewExe", "$TempDir", "Wait-Process", "Rename-Item", ".old", "Start-Process", "catch"] {
+            assert!(s.contains(needle), "missing {needle}");
+        }
+        // The catch block must put the old exe back.
+        let catch = &s[s.find("catch").unwrap()..];
+        assert!(catch.contains("Rename-Item") && catch.contains("Start-Process"));
+    }
+
+    #[test]
+    fn bad_checksum_is_rejected() {
+        let zip = b"abc";
+        let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  x.zip";
+        assert!(verify_zip(zip, good).is_ok());
+        assert!(verify_zip(zip, &good.to_uppercase()).is_ok());
+        assert!(verify_zip(b"abd", good).is_err());
+        assert!(verify_zip(zip, "").is_err());
     }
 }
