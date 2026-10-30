@@ -119,6 +119,7 @@ pub fn parse_release(json: &str, arch: &str) -> Result<Release, String> {
             a.iter()
                 .find(|x| x["name"].as_str() == Some(name))
                 .and_then(|x| x["browser_download_url"].as_str())
+                .filter(|u| u.starts_with("https://"))
                 .map(str::to_string)
         })
     };
@@ -148,7 +149,11 @@ fn run(cmd: &mut Command) -> Result<Output, String> {
 
 fn curl() -> Command {
     let mut c = Command::new("curl.exe");
-    c.args(["-sSL", "--fail", "-H", "User-Agent: claude-usage-widget"]);
+    c.args([
+        "-sSL", "--fail", "--connect-timeout", "15", "--max-time", "300",
+        "--proto", "=https", "--proto-redir", "=https",
+        "-H", "User-Agent: claude-usage-widget",
+    ]);
     c
 }
 
@@ -346,5 +351,26 @@ mod install_tests {
         assert!(verify_zip(zip, &good.to_uppercase()).is_ok());
         assert!(verify_zip(b"abd", good).is_err());
         assert!(verify_zip(zip, "").is_err());
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    #[test]
+    fn curl_has_timeouts_and_https_only() {
+        let args: Vec<String> = curl().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        for flag in ["--connect-timeout", "--max-time", "--proto"] {
+            assert!(args.iter().any(|a| a == flag), "missing {flag}");
+        }
+    }
+
+    #[test]
+    fn non_https_asset_urls_are_rejected() {
+        let json = r#"{"tag_name":"v0.4.0","assets":[
+            {"name":"claude-usage-widget-v0.4.0-win-x64.zip","browser_download_url":"file:///c:/x.zip"},
+            {"name":"claude-usage-widget-v0.4.0-win-x64.zip.sha256","browser_download_url":"https://example.test/s"}]}"#;
+        assert!(parse_release(json, "win-x64").is_err());
     }
 }
