@@ -3,6 +3,8 @@
 mod config;
 mod mcp;
 mod profile;
+#[allow(dead_code)]
+mod update;
 mod usage;
 mod web;
 
