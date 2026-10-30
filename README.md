@@ -113,6 +113,10 @@ Set-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run ClaudeUsage
 
 Remove with `Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run ClaudeUsageWidget`.
 
+## Updating
+
+Tray menu → **Check for updates**. If a newer GitHub release exists, you are asked to confirm; the app then downloads the zip for your architecture, verifies it against the release's `.sha256` file, closes, replaces its exe and starts the new version. If the download or checksum fails, nothing is changed. It uses the `curl`, `tar` and PowerShell that ship with Windows 10/11.
+
 ## Troubleshooting
 
 | Label | Meaning |
@@ -126,6 +130,7 @@ Remove with `Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion
 
 - `src/main.rs` – window, layered rendering, tray menu, polling thread
 - `src/config.rs` – config file, profile directory resolution
+- `src/update.rs` – check for updates: GitHub release lookup, SHA-256 verify, replace helper
 - `src/usage.rs` – runs `claude -p "/usage"` and parses it
 - `src/profile.rs` – creates a profile (folder, launcher, widget entry)
 - `src/mcp.rs` – central MCP list, sync into profile `.claude.json`

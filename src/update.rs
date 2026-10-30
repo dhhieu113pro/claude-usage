@@ -5,7 +5,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-pub const REPO: &str = "dhhieu113pro/claude-usage";
+pub const REPO: &str = "dhhieu113pro/rings-for-claude-code";
 
 #[derive(Debug)]
 pub struct Release {
