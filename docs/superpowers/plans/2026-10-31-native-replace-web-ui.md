@@ -6,9 +6,9 @@
 
 **Architecture:** New `src/manager.rs` holds a pure data layer (the Rust ports of `web.rs`'s API handlers, unit-tested) plus the reactor components (root window with a `SplitView` sidebar and the three pages). The widget's hand-written Win32 loop is untouched; the manager runs `App::run_component` on its own thread, launched from the tray, with a channel bridging later tray clicks to navigation. UI code is verified by building on Windows/CI; UI behaviour is verified manually on the developer's Windows machine.
 
-**Tech Stack:** Rust 2021, `windows-reactor = "0.100"`, existing `windows = 0.62` (widget, D2D, folder picker), `serde_json` (already). No other new dependencies.
+**Tech Stack:** Rust 2021, `windows-reactor = "0.100"`, `windows-canvas = "0.100"` (reactor feature, Task 4 signature rings), existing `windows = 0.62` (widget, D2D, folder picker), `serde_json` (already). No other new dependencies.
 
-**Spec:** `docs/superpowers/specs/2026-10-31-native-replace-web-ui-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-31-native-replace-web-ui-design.md` · UI/UX: `docs/superpowers/specs/2026-10-31-native-manager-ui-ux.md`
 
 ## Global Constraints
 
@@ -29,6 +29,7 @@
 - A profile whose `.claude.json` is unreadable: shown as an error card, its MCP checkboxes disabled, actions on it surface the error inline without touching any file (Task 1 test + Task 5 wiring).
 - Corrupt/incomplete user input (empty name, bad refresh seconds, blank folder line): surfaces as inline error text from the same message `normalize`/`validate` produce, and nothing is written (Task 1 tests, Tasks 4–6 wiring).
 - ARM64: every pipeline test task runs the matrix on `windows-latest` **and** `windows-11-arm`; a Release build on `aarch64-pc-windows-msvc` (pipeline) proves the arm64 ship path (Task 2, and Task 3+ tasks' build checks).
+- A ring shows a real reading or an empty track — never a made-up percent; a profile with no reading still renders its full card with muted rings (Task 1 test + Task 4 wiring).
 
 ---
 
@@ -41,7 +42,7 @@
 **Interfaces:**
 - Consumes: `config::{load, save, normalize, resolve_dir, Config, ProfileConfig}`, `mcp::{list, import, enabled, set_enabled, upsert, delete, Server}`, `profile::create` (all existing, unmodified).
 - Produces (used by Tasks 3–6 by exact name):
-  - `pub struct ProfileCard { pub name: String, pub dir: String, pub mcps: Vec<String>, pub error: Option<String> }` (dir = `config::resolve_dir(...).display().to_string()`; `mcps` empty when `error` is set)
+  - `pub struct ProfileCard { pub name: String, pub dir: String, pub mcps: Vec<String>, pub error: Option<String>, pub session_used: Option<f32>, pub weekly_used: Option<f32>, pub weekly_reset: Option<String> }` (dir from `config::resolve_dir`; the three usage fields come from the widget's live `STATE` mutex in `main.rs`, matched by profile name — `None` when the widget has no reading)
   - `pub struct ManagerState { pub servers: Vec<mcp::Server>, pub profiles: Vec<ProfileCard> }`
   - `pub fn snapshot() -> ManagerState` (port of `web.rs::profile_dirs` + `state`, fresh read each call)
   - `pub fn save_server(original: Option<String>, server: mcp::Server) -> Result<(), String>` (fresh dirs, `mcp::upsert`; when editing, carries over the existing entry's `extra` map untouched — `build_server` cannot recover keys like `tools`)
@@ -64,6 +65,7 @@
   - `toggle_import_delete_fresh_state`: profile dir with a `.claude.json` written, plus `save_server(None, build_server("s","stdio","npx","-y","","",""))` → `snapshot()` shows the server and its enabled state; `toggle` on it flips `.claude.json`; `delete_server("s")` removes it everywhere.
   - `edit_preserves_extra_keys`: import a server with `extra` keys (use the `Bravo - mssql-mcp` JSON from `src/mcp.rs:455`), then `save_server(Some("Bravo - mssql-mcp"), build_server("Bravo - mssql-mcp", "stdio", "dotnet", "x", "K=v", "", ""))` → `mcp::list()` still returns the `tools` extra.
   - `parse_lines_and_kv`: `parse_lines("a\r\nb\n\nc ")` == ["a","b","c"]; `parse_kv("a=1\nb=")` ok with `b=>""`; `parse_kv("a=1\nbad")` → `Err`; no quoting support: `"a=1=2"` → key `a`, value `1=2`.
+  - `snapshot_carries_widget_usage`: with a `main.rs::STATE` entry for profile `a` (session 42.0, no error) and no entry for profile `b`, `snapshot()`'s card for `a` has `session_used == Some(42.0)` and `b`'s has `None`; ring colours always come from `main.rs::level_color`, the manager never re-derives thresholds.
   - `new_profile_reports_errors_inline`: env configured like `src/profile.rs` tests; `new_profile("../evil", &[])` → `Err` mentioning name rules.
 - [ ] **Step 2: Run to verify failure:** `cargo test manager::` → compile error / FAIL (functions undefined). Run on Windows or in CI (this repo cannot compile off-Windows — see Global Constraints).
 - [ ] **Step 3: Implement the functions above.** No HTTP, no folder picker, no UI here. Ports of `web.rs:170-246` minus the JSON layer; `edit_profile`/`remove_profile` are new/config-only. Refresh via `refresh_widget()` exactly where `web.rs` sends `REFRESH_TX` today.
@@ -147,14 +149,15 @@ git push
 - Modify: `src/manager.rs` (`ProfilesPage` component + edit dialog + folder picker)
 
 **Interfaces:**
-- Consumes: Task 1 (`snapshot`, `new_profile`, `edit_profile`, `remove_profile`, `refresh_widget`), Task 3 (`ManagerMsg::Profiles`, `Page`), reactor sample `navigation` patterns (`View::component`, `context.callback`).
-- Native folder picker helper: `fn pick_folder() -> Option<String>` in `manager.rs` — `IFileOpenDialog` (`windows 0.62`, `Win32_UI_Shell` + `Win32_System_Com`): `CoCreateInstance` the dialog, `FOS_PICKFOLDERS`, return the first selected path; `None` on cancel/error. Runs on the manager (XAML/STA) thread; a `CoInitializeEx` battle mode result (`RPC_E_CHANGED_MODE`) counts as success since the thread is already set up.
-- Produces: `ProfilesMsg { Edit(String), Remove(String), PickedFolder(Option<String>), Commit { original: Option<String>, name: String, command: String, config_dir: String }, Create { name: String, servers: Vec<String> } }` — any task that re-renders must go through `ManagerMsg::Profiles`.
+- Consumes: Task 1 (`snapshot`, `new_profile`, `edit_profile`, `remove_profile`, `refresh_widget`), Task 3 (`ManagerMsg::Profiles`, `Page`), reactor sample `navigation` patterns (`View::component`, `context.callback`), the [UI/UX spec](../specs/2026-10-31-native-manager-ui-ux.md#screen-1--profiles).
+- Native folder picker helper: `fn pick_folder() -> Option<String>` in `manager.rs` — `IFileOpenDialog` (`windows 0.62`, `Win32_UI_Shell` + `Win32_System_Com`): `CoCreateInstance` the dialog, `FOS_PICKFOLDERS`, return the first selected path; `None` on cancel/error. Runs on the manager (XAML/STA) thread; an already-initialized COM result (`RPC_E_CHANGED_MODE`) counts as success.
+- Signature helper: `fn level_color(used: f32) -> (f32, f32, f32)` — proxy over `main.rs`'s existing `level_color` (single source of truth; publicise it or re-use it, never duplicate thresholds).
+- Produces: `ProfilesMsg { Edit(String), Remove(String), PickedFolder(Option<String>), Commit { original: Option<String>, name: String, command: String, config_dir: String }, Create { name: String, servers: Vec<String> } }` — every data-changing page action goes through `ManagerMsg::Profiles`.
 
-- [ ] **Step 1: Render the profiles list and buttons.** From `snapshot()` at create/update: cards per profile (name, resolved folder, MCP tags joined, error line when `error` is set); per-card buttons "Edit" (opens the dialog pre-filled from `config::load()`'s matching `ProfileConfig`) and "Remove" (yes/no confirm, then `remove_profile`); footer buttons "Add existing…" (folder picker; opens the same dialog with `name` empty and `config_dir` = picked folder) and "New profile" (dialog with a checkbox list of `mcp::list()` names and empty fields, name plus the picked `config_dir` optional).
-- [ ] **Step 2: Wire actions** to Task 1 functions; every `Err` shows as inline error text in the dialog/page area (the exact strings `config::normalize` / `profile::create` / `mcp::validate` produce — no `.expect`); on success call `refresh_widget()` and re-`snapshot()`.
-- [ ] **Step 3: Build and manual verify** (Windows): New profile → created dir/launcher/notes printed as multiline text like the old page; Edit keeps other profiles unchanged (pipeline `cargo test manager::` still green); Remove asks a confirm and only removes the widget row (profile folder left intact); folder picker opens a standard dialog.
-- [ ] **Step 4: Commit and push**
+- [ ] **Step 1: Render the profiles list and buttons.** Per the UI/UX spec's Screen 1: a command bar ("Add existing…" secondary, "+ New profile" primary), profile cards with two `RingMeter` mini meters (session/week, empty track when `None`, reset date caption under the week ring when known), name/source/dir lines, MCP tag chips (or muted "no MCP servers"), "Edit"/"Remove" text buttons (Remove red), inline error line on the card. Four states: loading (skeleton rows), empty ("No profiles yet." + one "New profile" button), error (read-failure lines), full.
+- [ ] **Step 2: Add the `RingMeter` component** using `windows-canvas = "0.100"` (feature `reactor`, host `canvas_invalidated` + `Invalidator`), track + arc from 12 o'clock with `level_color(clamp(used, 0..100))`, main.rs's exact geometry. If the canvas host fights the page layout or recovery, fall back to two thin rounded bars with the same ramp and record the decision in the design doc's Builder-check section.
+- [ ] **Step 3: Wire actions** to Task 1 functions; every `Err` shows inline in the dialog/page area (the exact strings `config::normalize` / `profile::create` / `mcp::validate` produce — no `.expect`); Remove and profile-Create use `ContentDialog` confirmations per the spec; on success call `refresh_widget()` and re-`snapshot()`.
+- [ ] **Step 4: Build and manual verify** (Windows) against the spec's Screen 1: New profile → created dir/launcher/notes printed multiline; a profile with no reading renders empty tracks (never a fake percent); Edit keeps other profiles untouched (pipeline `cargo test manager::` still green, including `snapshot_carries_widget_usage`); Remove confirms and leaves files intact; folder picker opens a standard dialog; focus visuals (Tab) reach every control and are visible.
 
 ```bash
 git add src/manager.rs
@@ -173,9 +176,9 @@ git push
 - Consumes: Task 1 (`snapshot`, `save_server`, `delete_server`, `toggle`, `import_from`, `build_server`, `parse_lines`, `parse_kv`), Task 3 (`ManagerMsg::Mcp`), reactor `TextBox` + `ElementRef` pattern from the `navigation` sample.
 - Produces: `McpMsg { Toggle { profile: String, server: String, on: bool }, Upsert { original: Option<String>, server: mcp::Server }, Delete(String), Import(String) }` — server objects always built via Task 1's `build_server` so parsing/`extra` handling stays single-sourced.
 
-- [ ] **Step 1: Render the matrix of servers × profiles.** One card per server from `snapshot().servers` (name, kind tag "stdio"/"http", summary = `command (+args joined " ")` or url), under it one checkbox per profile: checked iff the profile has no `error` and `p.mcps.contains(&s.name)`; disabled when the profile `error` is `Some`. Checkbox click → `McpMsg::Toggle` → Task 1's `toggle`.
+- [ ] **Step 1: Render the matrix of servers × profiles.** Per the UI/UX spec's Screen 2: a command bar ("from <profile>" dropdown + "Import" secondary, "+ Add server" primary; per-card "Edit"/"Delete" with Delete red), and one card per server from `snapshot().servers` (name, kind tag "stdio"/"http", summary = `command (+args joined " ")` or url, clipped with the full value in a tooltip), under it one checkbox per profile: checked iff the profile has no `error` and `p.mcps.contains(&s.name)`; disabled when the profile `error` is `Some`, with the error as the checkbox's tooltip; profile read errors render as warning cards below the list, as the old page does. Checkbox click → `McpMsg::Toggle` → Task 1's `toggle`. Four states like Screen 1: loading (skeleton rows), empty ("No MCP servers yet." + the one "+ Add server" action), error (warning cards), full.
 - [ ] **Step 2: Add/Edit dialog.** Common fields: name, kind toggle (stdio/http) switching displayed field sets; stdio fields = command `TextBox`, args `TextBox` (re-parsed via `parse_lines`), "Name/Value" rows with remove buttons and a "+" (env map); http fields = url, header rows same way; footer Save/Cancel. Edit passes `original`; builds via Task 1's `build_server` (so `extra` survives, per Task 1's `save_server`); rows pre-filled with the exact strings (args joined with `\n`, kv rows joined `\n`).
-- [ ] **Step 3: Import + Delete.** Profile dropdown listing `snapshot().profiles` names (defaults to the first), Import button → `import_from` → inline "Imported: a, b" (empty list → inline "Nothing to import"); Delete button per server → confirm → `delete_server`.
+- [ ] **Step 3: Import + Delete.** Profile dropdown listing `snapshot().profiles` names (defaults to the first), Import button → `import_from` → inline "Imported: a, b" (empty list → inline "Nothing to import"); Delete button per server → confirm dialog ("Delete "x" and remove it from every profile?" per the spec) → `delete_server`.
 - [ ] **Step 4: Build and manual verify** on Windows: toggling persists into that profile's `.claude.json`; error-profile checkboxes are disabled; renamed server moves entries in enabled profiles (`rename` integration remains covered by pipeline tests); import adds and reports names; deleting removes everywhere.
 - [ ] **Step 5: Commit and push**
 
